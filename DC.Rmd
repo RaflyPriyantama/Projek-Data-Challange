@@ -1,0 +1,136 @@
+---
+title: "Analisis Sentiment Pengguna Shopee Pada Fitur COD 2025 Dengan Regresi Logistik"
+author: "Rafly Priyantama Ramadhan Bagaskara"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## 1. Load Library
+
+```{r, message=FALSE}
+library(readr)
+library(dplyr)
+library(caret)
+library(pROC)
+library(FSelectorRcpp)
+library(glmnet)
+```
+
+## 2. Load Data 
+
+```{r}
+data_model <- read_csv("C:/Users/priya/Data Sentiment Ulasan Shopee COD 2025.csv")
+head(data_model)
+```
+
+## 3. Fungsi Model Logistik Regresi
+
+```{r}
+glmnet_sentiment <- function(data,
+                                 train_prop = 0.8,
+                                 alpha = 1,       
+                                 lambda = 0.01,  
+                                 seed = 123) {
+  # 1. Siapkan data 
+  data_model <- data %>%
+    filter(sentiment %in% c("positive", "negative")) %>%
+    mutate(
+      sentiment = factor(sentiment,
+                         levels = c("negative", "positive"))
+    )
+  
+  y <- data_model$sentiment
+  X <- data_model %>% select(-sentiment)
+  
+  stopifnot(nrow(X) == length(y))
+  
+  # 2. Train-test split
+  set.seed(seed)
+  n <- nrow(data_model)
+  n_train <- floor(train_prop * n)
+  idx_train <- sample(1:n, size = n_train)
+  
+  X_train <- X[idx_train, ]
+  X_test  <- X[-idx_train, ]
+  
+  y_train <- y[idx_train]
+  y_test  <- y[-idx_train]
+  
+  # jaga level faktor
+  y_train <- factor(y_train, levels = c("negative", "positive"))
+  y_test  <- factor(y_test,  levels = c("negative", "positive"))
+  
+  # 3. Feature selection (ig di data train)
+  train_fs <- cbind(X_train, sentiment = y_train)
+  
+  ig_scores <- information_gain(sentiment ~ ., data = train_fs)
+  ig_scores <- ig_scores[order(-ig_scores$importance), , drop = FALSE]
+  
+  # semua importance tidak = 0, pakai yg > 0
+  if (any(ig_scores$importance > 0)) {
+    selected_features <- ig_scores %>%
+      filter(importance > 0) %>%
+      pull(attributes)
+  } else {
+    selected_features <- ig_scores$attributes
+  }
+  
+  X_train_sel <- X_train[, selected_features, drop = FALSE]
+  X_test_sel  <- X_test[,  selected_features, drop = FALSE]
+  
+  # 4. GLMNET 
+  X_train_mat <- as.matrix(X_train_sel)
+  X_test_mat  <- as.matrix(X_test_sel)
+  
+  model_glmnet <- glmnet(
+    x = X_train_mat,
+    y = y_train,
+    family = "binomial",
+    alpha = alpha,
+    lambda = lambda
+  )
+  
+  # 5. Prediksi & evaluasi
+  pred_prob <- predict(
+    model_glmnet,
+    newx = X_test_mat,
+    type = "response"
+  )[, 1]
+  
+  pred_class <- ifelse(pred_prob > 0.5, "positive", "negative")
+  pred_class <- factor(pred_class, levels = c("negative", "positive"))
+  
+  cm <- confusionMatrix(pred_class, y_test, positive = "positive")
+  
+  roc_obj <- roc(y_test, pred_prob, levels = c("negative", "positive"))
+  auc_val <- auc(roc_obj)
+  
+  cat("AUC (test set):", as.numeric(auc_val), "\n")
+  print(cm$table)
+  
+  # 6. Return 
+  list(
+    model = model_glmnet,
+    selected_features = selected_features,
+    confusion_matrix = cm,
+    auc = auc_val,
+    y_test = y_test,
+    pred_prob = pred_prob,
+    pred_class = pred_class
+  )
+}
+```
+
+## 4. Hasil Model 
+
+```{r}
+hasil_glmnet <- glmnet_sentiment(data_model)
+
+# Hasil Area Under Curve (AUC)
+hasil_glmnet$auc
+
+# Hasil Confusion Matrix 
+hasil_glmnet$confusion_matrix
+```
